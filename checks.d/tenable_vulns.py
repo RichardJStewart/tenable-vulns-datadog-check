@@ -118,6 +118,35 @@ def _guess_dd_os_name(raw_name):
     return None
 
 
+# Common Asset Attribute fields (Tenable.io) that identify cloud workloads,
+# mapped to the tag name we emit as a CycloneDX vulnerability property.
+# https://developer.tenable.com/docs/common-asset-attributes
+CLOUD_ASSET_TAG_FIELDS = {
+    "aws_region": "aws-region",
+    "aws_owner_id": "aws-account-id",
+    "aws_ec2_instance_id": "aws-instance-id",
+    "aws_ec2_instance_ami_id": "aws-ami-id",
+    "aws_vpc_id": "aws-vpc-id",
+    "aws_subnet_id": "aws-subnet-id",
+    "aws_availability_zone": "aws-availability-zone",
+    "azure_subscription_id": "azure-subscription-id",
+    "azure_resource_group": "azure-resource-group",
+    "azure_vm_id": "azure-vm-id",
+    "azure_location": "azure-region",
+    "gcp_project_id": "gcp-project-id",
+    "gcp_zone": "gcp-zone",
+    "gcp_instance_id": "gcp-instance-id",
+}
+
+# Presence of any of these fields identifies which cloud provider an asset
+# belongs to, so we can also emit a single "cloud-provider" tag.
+CLOUD_PROVIDER_MARKER_FIELDS = {
+    "aws_ec2_instance_id": "aws",
+    "azure_vm_id": "azure",
+    "gcp_instance_id": "gcp",
+}
+
+
 class TenableVulnsCheck(AgentCheck):
     __NAMESPACE__ = "tenable_vulns"
 
@@ -390,8 +419,36 @@ class TenableVulnsCheck(AgentCheck):
 
         return bom_ref, hostname, component
 
+    @staticmethod
+    def _cloud_properties(asset):
+        """
+        Pulls cloud-workload context (AWS/Azure/GCP account, region, instance
+        ID, etc.) off a Tenable.io asset object and returns it as CycloneDX
+        vulnerability properties, matching Datadog's tag format ("name:value").
+        Only present on assets discovered via Tenable Cloud Vulnerability
+        Management / cloud connectors -- returns [] for plain on-prem hosts
+        and for Tenable.sc (whose normalized asset dict won't have these
+        fields at all).
+        """
+        props = []
+        provider = None
+        for field, provider_name in CLOUD_PROVIDER_MARKER_FIELDS.items():
+            if asset.get(field):
+                provider = provider_name
+                break
+        if provider:
+            props.append({"name": "cloud-provider", "value": provider})
+
+        for field, tag_name in CLOUD_ASSET_TAG_FIELDS.items():
+            value = asset.get(field)
+            if value:
+                props.append({"name": tag_name, "value": str(value)})
+
+        return props
+
     def _build_vulnerability_entry(self, finding):
         plugin = finding.get("plugin", {}) or {}
+        asset = finding.get("asset", {}) or {}
         cves = plugin.get("cve") or []
         vuln_id = cves[0] if cves else "PLUGIN-{}".format(plugin.get("id", "unknown"))
 
@@ -410,7 +467,7 @@ class TenableVulnsCheck(AgentCheck):
             "properties": [
                 {"name": "tenable:plugin_id", "value": str(plugin.get("id", ""))},
                 {"name": "tenable:plugin_family", "value": str(plugin.get("family", {}).get("name", ""))},
-            ],
+            ] + self._cloud_properties(asset),
         }
 
         synopsis = plugin.get("synopsis")
@@ -571,4 +628,3 @@ class TenableVulnsCheck(AgentCheck):
     def _save_watermark(self, run_started):
         # Small overlap to avoid missing findings indexed right at the boundary.
         self.write_persistent_cache(self._last_indexed_at_key, str(run_started - 300))
-        
