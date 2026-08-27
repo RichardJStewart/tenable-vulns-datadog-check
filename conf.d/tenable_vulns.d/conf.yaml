@@ -2,16 +2,57 @@
 init_config:
 
 instances:
-  - ## @param tenable_access_key - string - required
+  - ## @param tenable_platform - string - optional - default: tenable_io
+    ## Which Tenable deployment to pull vulnerabilities from:
+    ##   tenable_io - Tenable Vulnerability Management (cloud, tenable.io)
+    ##   tenable_sc - Tenable Security Center (self-hosted)
+    #
+    tenable_platform: "tenable_io"
+
+    ## --- Tenable.io settings (only used when tenable_platform: tenable_io) ---
+
+    ## @param tenable_access_key - string - required for tenable_io
     ## Tenable.io API access key.
     ## Generate one under Tenable.io > Settings > My Account > API Keys.
     #
     tenable_access_key: "<TENABLE_ACCESS_KEY>"
 
-    ## @param tenable_secret_key - string - required
+    ## @param tenable_secret_key - string - required for tenable_io
     ## Tenable.io API secret key.
     #
     tenable_secret_key: "<TENABLE_SECRET_KEY>"
+
+    ## --- Tenable Security Center settings (only used when tenable_platform: tenable_sc) ---
+
+    ## @param sc_host - string - required for tenable_sc
+    ## Hostname or IP of your Tenable Security Center instance.
+    #
+    # sc_host: "sc.internal.company.tld"
+
+    ## @param sc_port - integer - optional - default: 443
+    #
+    # sc_port: 443
+
+    ## @param sc_ssl_verify - boolean - optional - default: true
+    ## Set to false if Security Center uses a self-signed certificate and you
+    ## haven't installed it in the Agent's trust store. Prefer fixing the
+    ## trust store over disabling verification where possible.
+    #
+    # sc_ssl_verify: true
+
+    ## @param sc_access_key / sc_secret_key - string - preferred auth for tenable_sc
+    ## API keys (Security Center 5.13+). Generate under
+    ## My Account > Generate API Key in the Security Center UI.
+    #
+    # sc_access_key: "<SC_ACCESS_KEY>"
+    # sc_secret_key: "<SC_SECRET_KEY>"
+
+    ## @param sc_username / sc_password - string - fallback auth for tenable_sc
+    ## Only used if sc_access_key/sc_secret_key are not set. Requires a
+    ## dedicated service account with API access; avoid personal credentials.
+    #
+    # sc_username: "<SC_SERVICE_ACCOUNT>"
+    # sc_password: "<SC_SERVICE_ACCOUNT_PASSWORD>"
 
     ## @param dd_api_key - string - required
     ## Datadog API key. Uses the same key configured for the Agent (datadog.yaml)
@@ -28,7 +69,7 @@ instances:
     ## @param dd_site - string - optional - default: datadoghq.com
     ## Datadog site to send data to, e.g. datadoghq.com, datadoghq.eu, us3.datadoghq.com.
     #
-    dd_site: "us2.ddog-gov.com"
+    dd_site: "datadoghq.com"
 
     ## @param lookback_hours - integer - optional - default: 6
     ## On the very first run (no persistent cache yet), how far back to look
@@ -60,3 +101,4 @@ instances:
     ## vulnerabilities after 5 hours if they aren't re-submitted, so this
     ## check must run more often than that.
     min_collection_interval: 14400
+    
