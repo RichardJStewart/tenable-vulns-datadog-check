@@ -10,6 +10,49 @@ This is a custom Datadog Agent check that:
 3. Submits each BOM to Datadog's vulnerability import endpoint:
    `POST /api/v2/security/vulnerabilities`.
 
+## Tenable.io vs. Tenable Security Center
+
+This check supports both deployments via `tenable_platform` in `conf.yaml`:
+
+- **`tenable_io`** (default) — uses pyTenable's `TenableIO` client and the
+  vulnerability export API (`tio.exports.vulns()`). Auth is `tenable_access_key`
+  / `tenable_secret_key`.
+- **`tenable_sc`** — uses pyTenable's `TenableSC` client against your on-prem
+  Security Center instance (`sc.analysis.vulns()`, the `Analysis` API's
+  `vulndetails` tool with `sourceType='cumulative'`, which returns active/
+  unmitigated instances only — mitigated vulns are excluded automatically, so
+  no separate "state" filter is needed). Auth is either `sc_access_key`/
+  `sc_secret_key` (SC 5.13+) or `sc_username`/`sc_password` for older
+  instances. Set `sc_host` (and `sc_port` if not 443).
+
+Both paths are normalized into the same internal shape before being turned
+into CycloneDX, so everything downstream (batching, submission, cadence)
+behaves identically regardless of which platform you're on.
+
+### Things that differ with Security Center
+
+- **No stable asset UUID.** Unlike Tenable.io, Security Center doesn't expose
+  a persistent per-asset UUID in analysis results. The check builds an asset
+  key from IP + repository ID instead. This is stable as long as the host's
+  IP and repository don't change, but re-IP'd hosts will show up as a "new"
+  asset in Datadog. Datadog's spec doesn't require BOM-ref consistency across
+  imports, so this only matters for how findings are grouped, not for whether
+  the import succeeds.
+- **No CWE list by default.** Security Center's analysis output doesn't
+  include a structured CWE field the way Tenable.io's plugin object does; the
+  check parses CWE identifiers out of the `xref` field when present, but
+  coverage will be less complete.
+- **Filter syntax varies by SC version.** The `lastSeen` range filter used for
+  differential exports (`"<start>:<end>"` as epoch seconds) is the commonly
+  documented pattern, but Tenable has changed analysis filter behavior across
+  Security Center releases. Run `datadog-agent check tenable_vulns` after
+  setup and confirm you're getting the expected number of findings before
+  relying on this in production — adjust the filter tuple in
+  `_export_sc_vulns()` if your version needs different syntax.
+- **TLS.** On-prem Security Center instances often use self-signed
+  certificates. Prefer installing the cert in the Agent's trust store over
+  setting `sc_ssl_verify: false`.
+
 ## Files
 
 ```
@@ -92,4 +135,3 @@ On the very first run (no cache yet), it falls back to `lookback_hours`
 Each CycloneDX request is capped at Datadog's 1 MiB limit. The check
 batches at most 150 vulnerabilities per request per asset and will further
 split a batch in half if the serialized JSON still exceeds ~900 KB.
-
