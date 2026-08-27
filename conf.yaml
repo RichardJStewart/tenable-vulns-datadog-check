@@ -1,0 +1,62 @@
+## All options defined here are available to all instances.
+init_config:
+
+instances:
+  - ## @param tenable_access_key - string - required
+    ## Tenable.io API access key.
+    ## Generate one under Tenable.io > Settings > My Account > API Keys.
+    #
+    tenable_access_key: "<TENABLE_ACCESS_KEY>"
+
+    ## @param tenable_secret_key - string - required
+    ## Tenable.io API secret key.
+    #
+    tenable_secret_key: "<TENABLE_SECRET_KEY>"
+
+    ## @param dd_api_key - string - required
+    ## Datadog API key. Uses the same key configured for the Agent (datadog.yaml)
+    ## if you'd rather not duplicate it here; either works.
+    #
+    dd_api_key: "<DD_API_KEY>"
+
+    ## @param dd_app_key - string - required
+    ## Datadog application key. Must have the security_monitoring_findings_write
+    ## permission.
+    #
+    dd_app_key: "<DD_APP_KEY>"
+
+    ## @param dd_site - string - optional - default: datadoghq.com
+    ## Datadog site to send data to, e.g. datadoghq.com, datadoghq.eu, us3.datadoghq.com.
+    #
+    dd_site: "us2.ddog-gov.com"
+
+    ## @param lookback_hours - integer - optional - default: 6
+    ## On the very first run (no persistent cache yet), how far back to look
+    ## for Tenable findings (last_found filter). Subsequent runs use a
+    ## high-water mark saved between checks, so this only matters once.
+    #
+    lookback_hours: 6
+
+    ## @param min_severities - list of strings - optional
+    ## Which Tenable severities to import. Options: info, low, medium, high, critical.
+    #
+    min_severities:
+      - low
+      - medium
+      - high
+      - critical
+
+    ## @param include_unlicensed - boolean - optional - default: false
+    ## Include unlicensed assets in the Tenable export.
+    #
+    include_unlicensed: false
+
+    ## @param scanner_name - string - optional - default: tenable.io
+    ## Name reported as the scanning tool in the CycloneDX metadata.tools block.
+    #
+    scanner_name: "tenable.io"
+
+    ## Run this check every 4 hours (14400s). Datadog auto-closes imported
+    ## vulnerabilities after 5 hours if they aren't re-submitted, so this
+    ## check must run more often than that.
+    min_collection_interval: 14400
