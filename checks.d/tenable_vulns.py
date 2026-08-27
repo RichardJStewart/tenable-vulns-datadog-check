@@ -2,14 +2,23 @@
 #
 # Custom Datadog Agent check.
 #
-# Pulls vulnerability findings from Tenable Vulnerability Management (Tenable.io)
-# using pyTenable, converts them to CycloneDX 1.5 BOMs (one per affected asset),
-# and imports them into Datadog Cloud Security via:
+# Pulls vulnerability findings from either:
+#   - Tenable Vulnerability Management (Tenable.io), via the vulnerability
+#     export API (tio.exports.vulns()), or
+#   - Tenable Security Center (on-prem), via the analysis API
+#     (sc.analysis.vulns()),
+# using pyTenable, converts them to CycloneDX 1.5 BOMs (one per affected
+# asset), and imports them into Datadog Cloud Security via:
 #
 #     POST /api/v2/security/vulnerabilities
 #
-# See: "Import vulnerabilities into Datadog Cloud Security" and
-#      https://developer.tenable.com/docs/introduction-to-pytenable
+# See: "Import vulnerabilities into Datadog Cloud Security",
+#      https://developer.tenable.com/docs/introduction-to-pytenable, and
+#      https://developer.tenable.com/reference/navigate
+#
+# Set `tenable_platform: tenable_io` (default) or `tenable_platform: tenable_sc`
+# in conf.yaml to choose the data source. Everything downstream (CycloneDX
+# construction, batching, submission to Datadog) is shared between both.
 #
 # Install location (Agent < 7.x "custom check" layout):
 #   /etc/datadog-agent/checks.d/tenable_vulns.py
@@ -36,7 +45,12 @@ try:
 except ImportError:
     TenableIO = None
 
-__version__ = "1.0.0"
+try:
+    from tenable.sc import TenableSC
+except ImportError:
+    TenableSC = None
+
+__version__ = "1.1.0"
 
 # Datadog vulnerabilities are auto-closed by the backend after 5 hours if not
 # re-submitted, so this check should run at least every 4 hours. This is only
@@ -115,12 +129,26 @@ class TenableVulnsCheck(AgentCheck):
     # Config helpers
     # ------------------------------------------------------------------
 
+    def _platform(self):
+        platform = self.instance.get("tenable_platform", "tenable_io")
+        if platform not in ("tenable_io", "tenable_sc"):
+            raise CheckException(
+                "tenable_platform must be 'tenable_io' or 'tenable_sc', got: {}".format(platform)
+            )
+        return platform
+
     def _get_tenable_client(self):
+        if self._platform() == "tenable_sc":
+            return self._get_tenable_sc_client()
+        return self._get_tenable_io_client()
+
+    def _get_tenable_io_client(self):
         access_key = self.instance.get("tenable_access_key")
         secret_key = self.instance.get("tenable_secret_key")
         if not access_key or not secret_key:
             raise CheckException(
-                "tenable_access_key and tenable_secret_key are required in conf.yaml"
+                "tenable_access_key and tenable_secret_key are required in conf.yaml "
+                "when tenable_platform is 'tenable_io'"
             )
         if TenableIO is None:
             raise CheckException(
@@ -134,6 +162,46 @@ class TenableVulnsCheck(AgentCheck):
             product="tenable_vulns custom check",
             build=__version__,
         )
+
+    def _get_tenable_sc_client(self):
+        if TenableSC is None:
+            raise CheckException(
+                "pyTenable is not installed. Run: "
+                "/opt/datadog-agent/embedded/bin/pip install pytenable"
+            )
+
+        host = self.instance.get("sc_host")
+        if not host:
+            raise CheckException("sc_host is required in conf.yaml when tenable_platform is 'tenable_sc'")
+
+        port = int(self.instance.get("sc_port", 443))
+        ssl_verify = bool(self.instance.get("sc_ssl_verify", True))
+
+        access_key = self.instance.get("sc_access_key")
+        secret_key = self.instance.get("sc_secret_key")
+        username = self.instance.get("sc_username")
+        password = self.instance.get("sc_password")
+
+        if access_key and secret_key:
+            # Modern versions of pyTenable accept API keys directly in the constructor.
+            sc = TenableSC(
+                host,
+                port=port,
+                access_key=access_key,
+                secret_key=secret_key,
+                ssl_verify=ssl_verify,
+                vendor="Datadog",
+                product="tenable_vulns custom check",
+                build=__version__,
+            )
+        elif username and password:
+            sc = TenableSC(host, port=port, ssl_verify=ssl_verify)
+            sc.login(username=username, password=password)
+        else:
+            raise CheckException(
+                "Provide either sc_access_key/sc_secret_key or sc_username/sc_password in conf.yaml"
+            )
+        return sc
 
     def _dd_site_url(self):
         site = self.instance.get("dd_site", "datadoghq.com")
@@ -169,24 +237,125 @@ class TenableVulnsCheck(AgentCheck):
     # Tenable export
     # ------------------------------------------------------------------
 
-    def _export_tenable_vulns(self, tio, since_epoch):
+    def _export_tenable_vulns(self, client, since_epoch):
         """
-        Streams vulnerability findings from Tenable.io using the vulnerability
-        export API (wrapped by pyTenable's tio.exports.vulns()), filtered to
-        open/reopened findings last seen since `since_epoch`.
+        Yields findings in a single normalized ("Tenable.io export shape") form
+        regardless of whether the source is Tenable.io or Tenable Security Center.
         """
-        severities = self.instance.get("min_severities", ["low", "medium", "high", "critical"])
-        kwargs = {
-            "state": ["open", "reopened"],
-            "severity": severities,
-            "last_found": since_epoch,
-        }
-        if self.instance.get("include_unlicensed", False):
-            kwargs["include_unlicensed"] = True
+        if self._platform() == "tenable_sc":
+            for record in self._export_sc_vulns(client, since_epoch):
+                yield self._normalize_sc_finding(record)
+        else:
+            severities = self.instance.get("min_severities", ["low", "medium", "high", "critical"])
+            kwargs = {
+                "state": ["open", "reopened"],
+                "severity": severities,
+                "last_found": since_epoch,
+            }
+            if self.instance.get("include_unlicensed", False):
+                kwargs["include_unlicensed"] = True
 
-        self.log.debug("Requesting Tenable vulnerability export with filters: %s", kwargs)
-        for finding in tio.exports.vulns(**kwargs):
-            yield finding
+            self.log.debug("Requesting Tenable.io vulnerability export with filters: %s", kwargs)
+            for finding in client.exports.vulns(**kwargs):
+                yield finding
+
+    _SC_SEVERITY_NAME_TO_ID = {"low": "1", "medium": "2", "high": "3", "critical": "4"}
+
+    def _export_sc_vulns(self, sc, since_epoch):
+        """
+        Queries Tenable Security Center's analysis API for active (unmitigated)
+        vulnerability instances last seen since `since_epoch`. Uses the default
+        'vulndetails' tool with sourceType='cumulative', which returns only
+        currently-active findings (mitigated/patched vulns are excluded
+        automatically, so no explicit state filter is needed).
+        """
+        severity_names = self.instance.get("min_severities", ["low", "medium", "high", "critical"])
+        severity_ids = ",".join(
+            self._SC_SEVERITY_NAME_TO_ID[s] for s in severity_names if s in self._SC_SEVERITY_NAME_TO_ID
+        )
+        now_epoch = int(time.time())
+
+        filters = [("severity", "=", severity_ids)]
+        # NOTE: verify this date-range filter syntax against your SC version --
+        # Tenable Security Center's analysis filters have varied across
+        # releases. This "<start>:<end>" epoch-range form is the commonly
+        # documented pattern for lastSeen; test it with `datadog-agent check
+        # tenable_vulns` before relying on it in production.
+        filters.append(("lastSeen", "=", "{}:{}".format(since_epoch, now_epoch)))
+
+        self.log.debug("Requesting Tenable.sc analysis with filters: %s", filters)
+        for record in sc.analysis.vulns(*filters, tool="vulndetails", sourceType="cumulative"):
+            yield record
+
+    @staticmethod
+    def _epoch_to_iso(value):
+        try:
+            return dt.datetime.utcfromtimestamp(int(value)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_sc_finding(self, record):
+        """
+        Converts a Tenable Security Center analysis record (from sc.analysis.vulns())
+        into the same shape used by Tenable.io's export API, so downstream
+        CycloneDX-building code doesn't need to know which platform it came from.
+        """
+        severity = record.get("severity") or {}
+        try:
+            severity_id = int(severity.get("id"))
+        except (TypeError, ValueError):
+            severity_id = None
+
+        cve_raw = record.get("cve") or ""
+        cves = [c.strip() for c in cve_raw.split(",") if c.strip()]
+
+        family = record.get("family") or {}
+        repository = record.get("repository") or {}
+
+        # SC has no Tenable.io-style asset UUID; build a stable-enough key
+        # from IP + repository so findings on the same host group together.
+        ip = record.get("ip") or record.get("dnsName") or "unknown-host"
+        repo_id = repository.get("id", "")
+        asset_uuid = "{}-{}".format(ip, repo_id)
+
+        os_raw = record.get("operatingSystem")
+        operating_system = [os_raw] if os_raw else []
+
+        cwes = []
+        xref = record.get("xref") or ""
+        for entry in xref.split(","):
+            entry = entry.strip()
+            if entry.upper().startswith("CWE:"):
+                try:
+                    cwes.append(str(int(entry.split(":", 1)[1])))
+                except ValueError:
+                    continue
+
+        return {
+            "asset": {
+                "uuid": asset_uuid,
+                "fqdn": record.get("dnsName") or None,
+                "hostname": record.get("dnsName") or record.get("netbiosName") or ip,
+                "ipv4": [ip] if ip else [],
+                "operating_system": operating_system,
+            },
+            "plugin": {
+                "id": record.get("pluginID"),
+                "name": record.get("pluginName"),
+                "family": {"name": family.get("name", "")},
+                "cve": cves,
+                "cvss3_base_score": record.get("cvssV3BaseScore") or None,
+                "cvss3_vector": record.get("cvssV3Vector") or None,
+                "cvss_base_score": record.get("baseScore") or record.get("cvssBaseScore") or None,
+                "cvss_vector": record.get("cvssVector") or None,
+                "synopsis": record.get("synopsis"),
+                "description": record.get("description"),
+                "solution": record.get("solution"),
+                "cwe": cwes,
+            },
+            "severity_id": severity_id,
+            "first_found": self._epoch_to_iso(record.get("firstSeen")),
+        }
 
     # ------------------------------------------------------------------
     # CycloneDX construction
@@ -342,7 +511,7 @@ class TenableVulnsCheck(AgentCheck):
         scanner_name = self.instance.get("scanner_name", "tenable.io")
 
         try:
-            tio = self._get_tenable_client()
+            tenable_client = self._get_tenable_client()
         except CheckException as e:
             self.service_check("connectivity", AgentCheck.CRITICAL, message=str(e))
             raise
@@ -356,7 +525,7 @@ class TenableVulnsCheck(AgentCheck):
 
         n_findings = 0
         try:
-            for finding in self._export_tenable_vulns(tio, since_epoch):
+            for finding in self._export_tenable_vulns(tenable_client, since_epoch):
                 asset = finding.get("asset", {}) or {}
                 asset_key = asset.get("uuid") or asset.get("id")
                 if not asset_key:
@@ -374,7 +543,7 @@ class TenableVulnsCheck(AgentCheck):
                 n_findings += 1
         except Exception as e:
             self.service_check("connectivity", AgentCheck.CRITICAL, message=str(e))
-            raise CheckException("Error exporting vulnerabilities from Tenable.io: {}".format(e))
+            raise CheckException("Error exporting vulnerabilities from {}: {}".format(self._platform(), e))
 
         self.service_check("connectivity", AgentCheck.OK)
         self.gauge("tenable.findings_exported", n_findings)
@@ -402,3 +571,4 @@ class TenableVulnsCheck(AgentCheck):
     def _save_watermark(self, run_started):
         # Small overlap to avoid missing findings indexed right at the boundary.
         self.write_persistent_cache(self._last_indexed_at_key, str(run_started - 300))
+        
