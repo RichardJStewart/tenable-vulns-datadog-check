@@ -53,6 +53,41 @@ behaves identically regardless of which platform you're on.
   certificates. Prefer installing the cert in the Agent's trust store over
   setting `sc_ssl_verify: false`.
 
+## Cloud workload tags (Tenable Cloud Vulnerability Management)
+
+Tenable Cloud Vulnerability Management (agentless scanning of AWS/Azure/GCP
+workloads within Tenable One) writes into the same Tenable Vulnerability
+Management backend as everything else, so it's picked up automatically in
+`tenable_io` mode — no separate config needed.
+
+For findings on cloud-discovered assets, the check additionally pulls cloud
+context off Tenable's [Common Asset Attributes](https://developer.tenable.com/docs/common-asset-attributes)
+and adds them as `vulnerabilities[].properties` tags on the CycloneDX payload
+(shown as tags on the finding in Datadog):
+
+| Tag | Source field(s) |
+|---|---|
+| `cloud-provider` | Inferred from whichever of `aws_ec2_instance_id` / `azure_vm_id` / `gcp_instance_id` is present |
+| `aws-region` | `aws_region` |
+| `aws-account-id` | `aws_owner_id` |
+| `aws-instance-id` | `aws_ec2_instance_id` |
+| `aws-ami-id` | `aws_ec2_instance_ami_id` |
+| `aws-vpc-id` | `aws_vpc_id` |
+| `aws-subnet-id` | `aws_subnet_id` |
+| `aws-availability-zone` | `aws_availability_zone` |
+| `azure-subscription-id` | `azure_subscription_id` |
+| `azure-resource-group` | `azure_resource_group` |
+| `azure-vm-id` | `azure_vm_id` |
+| `azure-region` | `azure_location` |
+| `gcp-project-id` | `gcp_project_id` |
+| `gcp-zone` | `gcp_zone` |
+| `gcp-instance-id` | `gcp_instance_id` |
+
+Only fields actually present on the asset are emitted, so plain on-prem hosts
+(and all Tenable.sc findings, which don't carry these attributes) get none of
+these tags — just the existing `tenable:plugin_id` / `tenable:plugin_family`
+properties.
+
 ## Files
 
 ```
