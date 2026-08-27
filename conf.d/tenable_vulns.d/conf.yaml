@@ -101,4 +101,3 @@ instances:
     ## vulnerabilities after 5 hours if they aren't re-submitted, so this
     ## check must run more often than that.
     min_collection_interval: 14400
-    
