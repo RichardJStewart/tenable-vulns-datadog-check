@@ -32,7 +32,6 @@ behaves identically regardless of which platform you're on.
 ## Agent-based deployment
 
 This architecture depicts the deployment of the agent with the check interfacing with Tenable and Datadog CSM Vulnerabilities:
-
 ![Standalone Agent Check Architecture diagram](images/tenable_datadog_standalone_agent_architecture.png)
 
 ### Things that differ with Security Center
@@ -114,7 +113,7 @@ k8s/create-secret.sh                       # creates the credentials Secret
 
 This architecture depicts the deployment of the cluster agent with the check interfacing with Tenable and Datadog CSM Vulnerabilities:
 
-![Cluster Agent Check Architecture diagram](images/enable_datadog_k8s_cluster_check_architecture.png)
+![Cluster Agent Check Architecture diagram](images/tenable_datadog_k8s_cluster_check_architecture.png)
 
 ### 1. Build a runner image with pyTenable
 
