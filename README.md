@@ -29,6 +29,12 @@ Both paths are normalized into the same internal shape before being turned
 into CycloneDX, so everything downstream (batching, submission, cadence)
 behaves identically regardless of which platform you're on.
 
+## Agent-based deployment
+
+This architecture depicts the deployment of the agent with the check interfacing with Tenable and Datadog CSM Vulnerabilities:
+
+![Standalone Agent Check Architecture diagram](images/tenable_datadog_standalone_agent_architecture.png)
+
 ### Things that differ with Security Center
 
 - **No stable asset UUID.** Unlike Tenable.io, Security Center doesn't expose
@@ -104,6 +110,11 @@ k8s/Dockerfile.cluster-check-runner        # image with pyTenable baked in
 k8s/values-tenable-cluster-check.yaml      # Helm values overlay
 k8s/create-secret.sh                       # creates the credentials Secret
 ```
+## Agent-based deployment
+
+This architecture depicts the deployment of the cluster agent with the check interfacing with Tenable and Datadog CSM Vulnerabilities:
+
+![Cluster Agent Check Architecture diagram](images/enable_datadog_k8s_cluster_check_architecture.png)
 
 ### 1. Build a runner image with pyTenable
 
