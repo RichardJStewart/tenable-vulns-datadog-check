@@ -1,0 +1,74 @@
+# Helm values overlay for the official `datadog/datadog` chart.
+# Merge this into your existing values file, or pass it alongside with:
+#
+#   helm upgrade -i datadog datadog/datadog \
+#     -f values-datadog.yaml \
+#     -f values-tenable-cluster-check.yaml \
+#     --set-file datadog.checksd.tenable_vulns\.py=../checks.d/tenable_vulns.py \
+#     -n datadog
+#
+# The --set-file flag injects the actual check code from disk so you don't
+# have to hand-paste a ~500-line Python file into this YAML.
+
+datadog:
+  # Turns on the cluster-checks feature cluster-wide.
+  clusterChecks:
+    enabled: true
+
+  # NOTE: datadog.checksd is populated via --set-file above (see command).
+  # It's left empty here as a placeholder so the key exists if you prefer
+  # to inline it yourself instead:
+  # checksd:
+  #   tenable_vulns.py: |-
+  #     <contents of checks.d/tenable_vulns.py>
+
+  # Credentials referenced by %%env_...%% in clusterAgent.confd below must be
+  # present as env vars on whichever Agent process resolves the template.
+  # For a static `clusterAgent.confd` entry, that's the Cluster Agent itself.
+  # VERIFY this after deploying (see the "Verify" section in the README) --
+  # if your Agent version instead resolves %%env_%% on the Cluster Check
+  # Runner, move this envFrom block under clusterChecksRunner: instead.
+  envFrom:
+    - secretRef:
+        name: tenable-datadog-check-secrets
+
+clusterAgent:
+  enabled: true
+
+  # Static cluster-check config, owned by the Cluster Agent. It loads this,
+  # resolves the %%env_...%% placeholders, and dispatches the resulting
+  # instance to exactly one Cluster Check Runner -- so the check runs once
+  # per collection interval, not once per node.
+  confd:
+    tenable_vulns.yaml: |-
+      cluster_check: true
+      init_config:
+      instances:
+        - tenable_platform: "tenable_io"        # or "tenable_sc"
+          tenable_access_key: "%%env_TENABLE_ACCESS_KEY%%"
+          tenable_secret_key: "%%env_TENABLE_SECRET_KEY%%"
+          dd_api_key: "%%env_DD_API_KEY%%"
+          dd_app_key: "%%env_DD_APP_KEY%%"
+          dd_site: "datadoghq.com"
+          min_severities:
+            - low
+            - medium
+            - high
+            - critical
+          scanner_name: "tenable.io"
+          # Cluster checks run on the Cluster Agent's own schedule; this is
+          # still worth setting explicitly so it can't drift below Datadog's
+          # 5-hour auto-close window.
+          min_collection_interval: 14400
+
+clusterChecksRunner:
+  enabled: true
+  replicas: 2   # The Cluster Agent dispatches this check to exactly ONE
+                # replica at a time. Extra replicas give failover if a pod
+                # is rescheduled -- they do not cause duplicate execution.
+
+  image:
+    # A separate image just for the runner, with pyTenable baked in, so the
+    # per-node DaemonSet agents stay on the stock (smaller) Datadog image.
+    repository: "<YOUR_REGISTRY>/datadog-agent-tenable"
+    tag: "7-tenable"
