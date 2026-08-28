@@ -264,3 +264,43 @@ On the very first run (no cache yet), it falls back to `lookback_hours`
 Each CycloneDX request is capped at Datadog's 1 MiB limit. The check
 batches at most 150 vulnerabilities per request per asset and will further
 split a batch in half if the serialized JSON still exceeds ~900 KB.
+
+---
+
+**Note: Tenable Lumin risk metrics (CES, VPR, ACR, AES, Assessment Maturity,
+Remediation Maturity) are not natively supported by Datadog's vulnerabilities
+import API.**
+
+The endpoint is built around CycloneDX 1.5's vulnerability model, which
+allows exactly one `ratings` entry per vulnerability (a CVSS-shaped
+score/severity/vector) plus a generic per-vulnerability `properties` list of
+tags. There's no dedicated slot for a second, third-party risk score.
+Separately, Datadog computes its own comparable score (CVSS blended with
+EPSS, CISA KEV status, and runtime context) once data lands in Datadog —
+conceptually similar to VPR/CES, but it's Datadog's own calculation, not an
+ingestion path for Tenable's numbers.
+
+Whether a given Lumin metric can be represented at all depends on its scope:
+
+| Metric | Scope | Fits the import API? |
+|---|---|---|
+| **VPR** | Per-vulnerability (0.1–10) | Only as a `vulnerabilities.properties` tag. Don't put it in `ratings.score` — that field feeds Datadog's own CVSS+EPSS-based severity, and overwriting it with VPR would silently break that scoring rather than complement it. |
+| **ACR** | Per-asset (1–10 criticality) | Only as a `properties` tag, duplicated onto every finding for that asset — there's no asset/component-level custom field in the spec, only a per-vulnerability one. |
+| **AES** | Per-asset (derived from ACR × VPR) | Same limitation as ACR. |
+| **CES** | Org-wide (0–1000, aggregated across all assets) | No — not scoped to any asset or vulnerability, so it has no place in a per-asset CycloneDX batch import. |
+| **Assessment Maturity** | Org-wide letter grade (A–F) | No — program-level grade, not a finding. |
+| **Remediation Maturity** | Org-wide letter grade (A–F) | No — same as above. |
+
+If you want these surfaced in Datadog anyway:
+
+- **VPR / ACR / AES** could be added as `vulnerabilities.properties` tags
+  (the same pattern already used for `tenable:plugin_id` and the
+  cloud-provider tags), making them filterable on findings without
+  affecting Datadog's own severity calculation.
+- **CES / Assessment Maturity / Remediation Maturity** aren't vulnerability
+  data at all — they'd need to go through Datadog's regular metrics
+  pipeline instead (e.g. `self.gauge("tenable.lumin.ces", ...)` from this
+  same check), not the CycloneDX import endpoint.
+
+None of this is implemented in `tenable_vulns.py` currently — it's left as a
+possible extension.
