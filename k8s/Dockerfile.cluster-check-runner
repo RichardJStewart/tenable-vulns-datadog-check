@@ -1,0 +1,13 @@
+# Custom image used ONLY by the Cluster Checks Runner deployment.
+# The regular node-agent DaemonSet keeps using the stock Datadog Agent image --
+# pyTenable only needs to exist where the check actually executes.
+#
+# Build & push:
+#   docker build -t <YOUR_REGISTRY>/datadog-agent-tenable:7-tenable \
+#     -f Dockerfile.cluster-check-runner .
+#   docker push <YOUR_REGISTRY>/datadog-agent-tenable:7-tenable
+
+ARG AGENT_VERSION=7
+FROM gcr.io/datadoghq/agent:${AGENT_VERSION}
+
+RUN /opt/datadog-agent/embedded/bin/pip install --no-cache-dir pytenable
