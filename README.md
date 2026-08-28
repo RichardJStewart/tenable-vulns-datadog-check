@@ -88,6 +88,90 @@ Only fields actually present on the asset are emitted, so plain on-prem hosts
 these tags — just the existing `tenable:plugin_id` / `tenable:plugin_family`
 properties.
 
+## Deploying on Kubernetes (Datadog node Agent / Cluster Agent)
+
+Do **not** just drop this check into every node Agent's `conf.d` the normal
+way (e.g. via `datadog.confd` alone) — it would run once per node, hitting
+Tenable's export API and re-submitting duplicate CycloneDX payloads to
+Datadog on every node, every collection interval. Instead, deploy it as a
+**Cluster Check**: the Cluster Agent loads the config once and dispatches it
+to exactly one runner, cluster-wide, regardless of node count.
+
+Files for this are under `k8s/`:
+
+```
+k8s/Dockerfile.cluster-check-runner        # image with pyTenable baked in
+k8s/values-tenable-cluster-check.yaml      # Helm values overlay
+k8s/create-secret.sh                       # creates the credentials Secret
+```
+
+### 1. Build a runner image with pyTenable
+
+The per-node DaemonSet agents don't need pyTenable — only whichever pod
+actually executes the check does. Build a small custom image just for the
+Cluster Check Runner:
+
+```bash
+cd k8s
+docker build -t <YOUR_REGISTRY>/datadog-agent-tenable:7-tenable \
+  -f Dockerfile.cluster-check-runner .
+docker push <YOUR_REGISTRY>/datadog-agent-tenable:7-tenable
+```
+
+### 2. Create the credentials Secret
+
+```bash
+TENABLE_ACCESS_KEY=... TENABLE_SECRET_KEY=... \
+DD_API_KEY=... DD_APP_KEY=... \
+./create-secret.sh datadog   # namespace
+```
+
+### 3. Deploy/upgrade with Helm
+
+```bash
+helm upgrade -i datadog datadog/datadog \
+  -f values-datadog.yaml \
+  -f k8s/values-tenable-cluster-check.yaml \
+  --set-file datadog.checksd.tenable_vulns\.py=checks.d/tenable_vulns.py \
+  --set clusterChecksRunner.image.repository=<YOUR_REGISTRY>/datadog-agent-tenable \
+  --set clusterChecksRunner.image.tag=7-tenable \
+  -n datadog
+```
+
+`--set-file` injects the actual check code from `checks.d/tenable_vulns.py`
+so you don't have to hand-paste it into a values file.
+
+### How this maps to Datadog's cluster-check machinery
+
+| Piece | Where it lives | Why |
+|---|---|---|
+| Check code (`tenable_vulns.py`) | `datadog.checksd` → mounted into `/checks.d` on both node Agents and Cluster Check Runner pods | Datadog requires the check code to be present wherever it might be dispatched |
+| pyTenable dependency | Baked into the Cluster Check Runner's image only | Keeps the per-node DaemonSet image lean; the check never runs on node Agents |
+| Instance config (`tenable_vulns.yaml`, with `cluster_check: true`) | `clusterAgent.confd` | Marks it as a cluster check; the Cluster Agent owns dispatch |
+| Credentials | Kubernetes Secret → `envFrom` on the Cluster Agent, referenced via `%%env_...%%` in the confd | Keeps API keys out of the Helm values/ConfigMap |
+| Execution | `clusterChecksRunner` Deployment (2+ replicas for failover) | Cluster Agent dispatches the check to exactly one replica — extra replicas are for failover, not parallel execution |
+
+### Verify after deploying
+
+```bash
+# Confirm the Cluster Agent sees and dispatches the check:
+kubectl exec -n datadog deploy/datadog-cluster-agent -- \
+  datadog-cluster-agent status | grep -A5 "tenable_vulns"
+
+# Confirm a runner actually executed it:
+kubectl exec -n datadog deploy/datadog-clusterchecks -- \
+  agent status | grep -A10 "tenable_vulns"
+```
+
+⚠️ One thing to confirm on your specific Agent version: `%%env_...%%`
+placeholders in a static `clusterAgent.confd` entry are normally resolved by
+the Cluster Agent process itself before dispatch, which is why the Secret's
+`envFrom` above is attached to the Cluster Agent rather than the runner. If
+`datadog-cluster-agent status` shows the check dispatched but the runner logs
+show empty/unresolved credentials, move the `envFrom` block to
+`clusterChecksRunner:` instead and re-deploy — this is the one part of the
+setup worth validating against a real cluster rather than trusting blindly.
+
 ## Files
 
 ```
